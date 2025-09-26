@@ -54,30 +54,51 @@ if __name__ == "__main__":
     plt.title("CERAD Score Distribution (All Categories)")
     plt.show()
 
-    # 6. FIXED ANOVA: Test Age at Death differences across CERAD categories
-    cerad_groups = {
-        category: [
-            int(p.age_at_death) for p in Patient.all_patients
-            if p.CERAD_score.strip() == category and str(p.age_at_death).isdigit()
-        ]
-        for category in cerad_categories
-    }
+    # ==================================================
+    # 6. Two-Way ANOVA (CERAD, APOE & Age at Death)
+    # ==================================================
+    import pandas as pd
+    import statsmodels.api as sm
+    from statsmodels.formula.api import ols
 
-    # Keep only non-empty groups
-    non_empty_groups = [values for values in cerad_groups.values() if values]
+    # Build DataFrame for statsmodels
+    records = []
+    for p in Patient.all_patients:
+        if str(p.age_at_death).isdigit():
+            records.append({
+                "age_at_death": int(p.age_at_death),
+                "CERAD": p.CERAD_score.strip(),
+                "APOE": p.apoe.strip().upper()
+            })
+    df = pd.DataFrame(records)
 
-    if len(non_empty_groups) > 1:
-        f_stat, p_val = stats.f_oneway(*non_empty_groups)
-        print("\nANOVA Results (Age at Death across CERAD categories):")
-        print(f"F-value: {f_stat:.3f}")
-        print(f"P-value: {p_val:.3f}")
+    if not df.empty:
+        model = ols('age_at_death ~ C(CERAD) + C(APOE) + C(CERAD):C(APOE)', data=df).fit()
+        anova_table = sm.stats.anova_lm(model, typ=2)
 
-        if p_val < 0.05:
-            print("Result: Statistically significant difference between groups (p < 0.05).")
-        else:
-            print("Result: No statistically significant difference (p >= 0.05).")
-    else:
-        print("Not enough groups with age data to run ANOVA.")
+        print("\nTwo-Way ANOVA Results (Age at Death ~ CERAD × APOE):")
+        print(anova_table)
+ # ==================================================
+        # 7. Tukey’s HSD Post-hoc Tests
+        # ==================================================
+        from statsmodels.stats.multicomp import pairwise_tukeyhsd
+        import matplotlib.pyplot as plt
+
+        print("\nTukey HSD for CERAD categories:")
+        tukey_cerad = pairwise_tukeyhsd(endog=df["age_at_death"],
+                                        groups=df["CERAD"],
+                                        alpha=0.05)
+        print(tukey_cerad)
+        tukey_cerad.plot_simultaneous(comparison_name="Absent", ylabel="CERAD Category")
+        plt.show()
+
+        print("\nTukey HSD for APOE groups:")
+        tukey_apoe = pairwise_tukeyhsd(endog=df["age_at_death"],
+                                       groups=df["APOE"],
+                                       alpha=0.05)
+        print(tukey_apoe)
+        tukey_apoe.plot_simultaneous(comparison_name="3/3", ylabel="APOE Group")
+        plt.show()
 
     # 7. Scatter Plot: APOE vs CERAD scores (ordered labels)
     import random
@@ -162,3 +183,4 @@ if __name__ == "__main__":
     #plt.ylabel('ABeta42')
     #plt.title('Scatter Plot of Age of Death vs ABeta42')
     #plt.show()
+
