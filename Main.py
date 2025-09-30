@@ -1,186 +1,187 @@
 import csv
 import matplotlib.pyplot as plt
-import numpy as np
-from scipy import stats
-from Patient import Patient 
+import statsmodels.api as sm
+import seaborn as sns
+from statsmodels.stats.contingency_tables import Table
+import pandas as pd
+from Patient import Patient
+
 
 if __name__ == "__main__":
     # 1. Load patients from MetaData.csv
-    Patient.all_patients.clear()  # avoid duplicates if re-run
     Patient.instantiate_from_csv("MetaData.csv")
-
-    # 2. Print all patients to verify
     print("Loaded patients:")
     for patient in Patient.all_patients:
         print(patient)
 
-    # 3. Count patients by APOE genotype
-    genotype_counts = {}
+
+    # 2. Print all patients to verify
+    cerad_order = {"Absent": 0, "Sparse": 1, "Moderate": 2, "Frequent": 3}
+    Patient.all_patients.sort(
+        key=lambda p: cerad_order.get(p.CERAD_score.strip(), 99)  # 99 = "unknown" catch
+    )
+    # Print sorted list
+    print("\nPatients sorted by CERAD score:")
     for patient in Patient.all_patients:
-        genotype_counts[patient.apoe] = genotype_counts.get(patient.apoe, 0) + 1
+        print(patient, getattr(patient, "CERAD_score", "N/A"))
 
-    print("\nAPOE Genotype counts:")
-    for genotype, count in genotype_counts.items():
-        print(f"{genotype}: {count}")
 
-    # 4. CERAD histogram (numeric only, if possible)
-    cerad_numeric_map = {"Absent": 0, "Sparse": 1, "Moderate": 2, "Frequent": 3}
+    #3. Sorted dictionary
+    def sort_by_cerad(cls):
+        # Ensure dictionary is clean
+        cls.cerad_groups.clear()
+        for patient in cls.all_patients:
+            cerad = patient.CERAD_score.strip()
+            if cerad not in cls.cerad_groups:
+                cls.cerad_groups[cerad] = []
+            cls.cerad_groups[cerad].append(patient)
 
-    cerad_scores = []
-    for p in Patient.all_patients:
-        score = p.CERAD_score.strip()
-        if score in cerad_numeric_map:
-            cerad_scores.append(cerad_numeric_map[score])
+    def subsort_by_age(cls):
+        for cerad, patients in cls.cerad_groups.items():
+            # Sort in place by numeric age (invalid -> big number at end)
+            patients.sort(
+                key=lambda p: int(p.age_at_death) if str(p.age_at_death).isdigit() else 999
+            )
+            cls.cerad_groups[cerad] = patients    
 
-    if cerad_scores:
-        plt.hist(cerad_scores, bins=range(min(cerad_scores), max(cerad_scores) + 2), edgecolor="black")
-        plt.title("Distribution of CERAD Scores")
-        plt.xlabel("CERAD Score (0=Absent, 1=Sparse, 2=Moderate, 3=Frequent)")
-        plt.ylabel("Number of Patients")
-        plt.show()
-    else:
-        print("No valid CERAD scores found for plotting.")
 
-    # 5. Bar graph (CERAD scores vs number of patients)
-    cerad_categories = ["Absent", "Sparse", "Moderate", "Frequent"]
-
-    counts = [
-        sum(1 for p in Patient.all_patients if p.CERAD_score.strip() == category)
-        for category in cerad_categories
+    #.4 Bar graph (CERAD scores vs number of patients)
+    # Filter only patients with dementia
+    dementia_patients = [
+        p for p in Patient.all_patients 
+        if p.cognitive_status and "dementia" in p.cognitive_status.lower() 
+        and p.CERAD_score
     ]
 
-    plt.bar(cerad_categories, counts, color=["skyblue", "lightgreen", "orange", "salmon"], edgecolor="black")
-    plt.ylabel("Number of Patients")
-    plt.title("CERAD Score Distribution (All Categories)")
+    # Count how many dementia patients have each CERAD score
+    cerad_order = ["Absent", "Sparse", "Moderate", "Frequent"]
+    counts = {cerad: 0 for cerad in cerad_order}
+
+    for p in dementia_patients:
+        cerad = p.CERAD_score.strip().title()
+        if cerad in counts:
+            counts[cerad] += 1
+
+    # Convert counts to percentages
+    total_dementia = len(dementia_patients)
+    percentages = {cerad: (count / total_dementia) * 100 for cerad, count in counts.items()}
+
+    # Plot
+    plt.figure(figsize=(6, 4))
+    plt.bar(percentages.keys(), percentages.values(), color="salmon", edgecolor="black")
+    plt.ylabel("Percentage of Dementia Patients (%)")
+    plt.xlabel("CERAD Score")
+    plt.title("CERAD Score Distribution Among Dementia Patients")
+    plt.ylim(0, 40)
     plt.show()
 
-    # ==================================================
-    # 6. Two-Way ANOVA (CERAD, APOE & Age at Death)
-    # ==================================================
-    import pandas as pd
-    import statsmodels.api as sm
-    from statsmodels.formula.api import ols
+    #6. percentage of demntia patients vs apoe genotype
+    # Filter only patients with dementia
+    dementia_patients = [
+        p for p in Patient.all_patients
+        if p.cognitive_status and "dementia" in p.cognitive_status.lower()
+        and p.apoe
+    ]
 
-    # Build DataFrame for statsmodels
-    records = []
-    for p in Patient.all_patients:
-        if str(p.age_at_death).isdigit():
-            records.append({
-                "age_at_death": int(p.age_at_death),
-                "CERAD": p.CERAD_score.strip(),
-                "APOE": p.apoe.strip().upper()
-            })
-    df = pd.DataFrame(records)
+    # Count how many dementia patients have each APOE genotype
+    apoe_order = ["2/3", "3/3", "3/4", "4/4"]
+    counts = {apoe: 0 for apoe in apoe_order}
 
-    if not df.empty:
-        model = ols('age_at_death ~ C(CERAD) + C(APOE) + C(CERAD):C(APOE)', data=df).fit()
-        anova_table = sm.stats.anova_lm(model, typ=2)
+    for p in dementia_patients:
+        genotype = p.apoe.strip()
+        if genotype in counts:
+            counts[genotype] += 1
 
-        print("\nTwo-Way ANOVA Results (Age at Death ~ CERAD × APOE):")
-        print(anova_table)
- # ==================================================
-        # 7. Tukey’s HSD Post-hoc Tests
-        # ==================================================
-        from statsmodels.stats.multicomp import pairwise_tukeyhsd
-        import matplotlib.pyplot as plt
+    # Convert counts to percentages
+    total_dementia = len(dementia_patients)
+    percentages = {genotype: (count / total_dementia) * 100 for genotype, count in counts.items()}
 
-        print("\nTukey HSD for CERAD categories:")
-        tukey_cerad = pairwise_tukeyhsd(endog=df["age_at_death"],
-                                        groups=df["CERAD"],
-                                        alpha=0.05)
-        print(tukey_cerad)
-        tukey_cerad.plot_simultaneous(comparison_name="Absent", ylabel="CERAD Category")
-        plt.show()
-
-        print("\nTukey HSD for APOE groups:")
-        tukey_apoe = pairwise_tukeyhsd(endog=df["age_at_death"],
-                                       groups=df["APOE"],
-                                       alpha=0.05)
-        print(tukey_apoe)
-        tukey_apoe.plot_simultaneous(comparison_name="3/3", ylabel="APOE Group")
-        plt.show()
-
-    # 7. Scatter Plot: APOE vs CERAD scores (ordered labels)
-    import random
-    import numpy as np
-    import matplotlib.pyplot as plt
-    from scipy import stats
-
-    apoe_positions = {"2/3": 1, "3/3": 2, "3/4": 3, "4/4": 4}
-    x, y = [], []
-
-    # Collect scatter data
-    for p in Patient.all_patients:
-        genotype = p.apoe.strip().upper()
-        if str(p.age_at_death).isdigit() and genotype in apoe_positions:
-            # jitter x a little so points don't overlap exactly
-            x.append(apoe_positions[genotype] + random.uniform(-0.1, 0.1))
-            y.append(int(p.age_at_death))
-
-    # Scatter plot
-    plt.figure(figsize=(8, 6))
-    plt.scatter(x, y, alpha=0.7)
-    plt.xticks(list(apoe_positions.values()), list(apoe_positions.keys()))
+    # Plot
+    plt.figure(figsize=(6, 4))
+    plt.bar(percentages.keys(), percentages.values(), color="skyblue", edgecolor="black")
+    plt.ylabel("Percentage of Dementia Patients (%)")
     plt.xlabel("APOE Genotype")
-    plt.ylabel("Age at Death")
-    plt.title("Scatter: APOE Genotype vs Age at Death")
-    plt.ylim(70, 105)  # focus on your valid range
-    plt.grid(axis="y", linestyle="--", alpha=0.6)
-
-    # Overlay mean ± std dev
-    for genotype, xpos in apoe_positions.items():
-        ages = [
-            int(p.age_at_death) 
-            for p in Patient.all_patients 
-            if str(p.age_at_death).isdigit() and p.apoe.strip().upper() == genotype
-        ]
-        if ages:
-            mean_age = np.mean(ages)
-            std_age = np.std(ages)
-            # mean
-            plt.scatter([xpos], [mean_age], color="red", s=120, marker="_", linewidths=2)
-            # std error bars
-            plt.errorbar(xpos, mean_age, yerr=std_age, color="red", capsize=5, linestyle="none")
-
+    plt.title("APOE Genotype Distribution Among Dementia Patients")
+    plt.ylim(0, 60)
     plt.show()
 
-    # Run ANOVA test across groups
-    groups = [
-        [int(p.age_at_death) for p in Patient.all_patients 
-        if str(p.age_at_death).isdigit() and p.apoe.strip().upper() == genotype]
-        for genotype in apoe_positions.keys()
+    #5. percentage of demntia patients vs apoe genotype
+    # Filter only patients with dementia
+    dementia_patients = [
+        p for p in Patient.all_patients
+        if p.cognitive_status and "dementia" in p.cognitive_status.lower()
+        and p.apoe
     ]
-    groups = [g for g in groups if g]  # remove empty groups
 
-    if len(groups) > 1:
-        f_stat, p_val = stats.f_oneway(*groups)
-        print("\nANOVA Results (Age at Death across APOE groups):")
-        print(f"F = {f_stat:.3f}, p = {p_val:.3f}")
+    # Count how many dementia patients have each APOE genotype
+    apoe_order = ["2/3", "3/3", "3/4", "4/4"]
+    counts = {apoe: 0 for apoe in apoe_order}
 
+    for p in dementia_patients:
+        genotype = p.apoe.strip()
+        if genotype in counts:
+            counts[genotype] += 1
 
+    # Convert counts to percentages
+    total_dementia = len(dementia_patients)
+    percentages = {genotype: (count / total_dementia) * 100 for genotype, count in counts.items()}
 
+    # Plot
+    plt.figure(figsize=(6, 4))
+    plt.bar(percentages.keys(), percentages.values(), color="skyblue", edgecolor="black")
+    plt.ylabel("Percentage of Dementia Patients (%)")
+    plt.xlabel("APOE Genotype")
+    plt.title("APOE Genotype Distribution Among Dementia Patients")
+    plt.ylim(0, 60)
+    plt.show()
 
+    #6. APOE Genotype vs CERAD scores in the set of dementia patients
+    import pandas as pd
+    import seaborn as sns
+    import matplotlib.pyplot as plt
 
+    # Filter only patients with dementia
+    dementia_patients = [
+        p for p in Patient.all_patients
+        if p.cognitive_status and "dementia" in p.cognitive_status.lower()
+        and p.apoe and p.CERAD_score
+    ]
 
+    # Create DataFrame
+    data = []
+    for p in dementia_patients:
+        data.append({
+            "APOE": p.apoe.strip(),
+            "CERAD": p.CERAD_score.strip().title()
+        })
 
-    
-    #9) GET PATIENT ATTRIBUTES THAT WE WANT TO COMPARE ON A SCATTER PLOT
-    #death_age_list = []
-    #ABeta42 = []
+    df = pd.DataFrame(data)
 
-    #for patient in Patient.all_patients:
-        #death_age_list.append(patient.death_age)
+    # Crosstab: rows = APOE, columns = CERAD, values = counts
+    crosstab = pd.crosstab(df["APOE"], df["CERAD"])
 
-    #for patient in Patient.all_patients:
-        #ABeta42.append(patient.ABeta42)
+    # Ensure all CERAD and APOE categories are included
+    cerad_order = ["Absent", "Sparse", "Moderate", "Frequent"]
+    apoe_order = ["2/3", "3/3", "3/4", "4/4"]
 
-    #X = [death_age_list] # Independent variable
-    #y = [ABeta42] # Dependent variable
-    
-    #10) VISUALIZE DATA ON A SCATTER PLOT
-    #plt.scatter(X, y, color='blue')
-    #plt.xlabel('Age of Death')
-    #plt.ylabel('ABeta42')
-    #plt.title('Scatter Plot of Age of Death vs ABeta42')
-    #plt.show()
+    for cerad in cerad_order:
+        if cerad not in crosstab.columns:
+            crosstab[cerad] = 0
 
+    crosstab = crosstab[cerad_order]  # reorder columns
+    crosstab = crosstab.reindex(apoe_order)  # reorder rows
+
+    # Convert counts to percentages per APOE genotype
+    percent_crosstab = crosstab.div(crosstab.sum(axis=1), axis=0) * 100
+
+    # Plot heatmap
+    plt.figure(figsize=(8, 5))
+    sns.heatmap(
+        percent_crosstab,
+        annot=True, fmt=".1f", cmap="YlOrRd",
+        cbar_kws={'label': 'Percentage of Dementia Patients (%)'}
+    )
+    plt.xlabel("CERAD Score")
+    plt.ylabel("APOE Genotype")
+    plt.title("CERAD Score Distribution Across APOE Genotypes (Dementia Patients)")
+    plt.show()
